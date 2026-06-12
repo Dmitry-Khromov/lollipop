@@ -41,7 +41,10 @@ ok "Hammerspoon"
 mkdir -p "$CONFIG_DIR"
 if [ ! -s "$KEY_FILE" ]; then
   echo ""
-  echo "  Lollipop needs a Groq API key. Free account, no card: https://console.groq.com/keys"
+  echo "  Lollipop needs a Groq API key — free account, no card required."
+  echo "  Opening https://console.groq.com/keys in your browser…"
+  echo "  (sign up / log in there, click 'Create API Key', copy it)"
+  open "https://console.groq.com/keys" 2>/dev/null || echo "  Couldn't open the browser — visit the URL above manually."
   printf '  Paste your Groq API key (input hidden): '
   read -r -s GROQ_KEY
   echo ""
