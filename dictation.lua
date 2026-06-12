@@ -272,3 +272,12 @@ if apiKey then
 else
   log("WARNING: no Groq key — set GROQ_API_KEY or run setup.sh (expected " .. CONFIG.keyFile .. ")")
 end
+
+-- without Accessibility the eventtap silently never fires — make that failure loud.
+-- the `true` argument asks macOS to show its grant prompt.
+if hs.accessibilityState(true) then
+  showAlert("🍭 Lollipop ready — hold Fn+Shift to dictate", 2)
+else
+  log("WARNING: Accessibility permission missing — hotkey cannot work until granted")
+  showAlert("🍭 Lollipop needs Accessibility permission:\nSystem Settings → Privacy & Security → Accessibility → enable Hammerspoon,\nthen re-run setup.sh", 12)
+end
