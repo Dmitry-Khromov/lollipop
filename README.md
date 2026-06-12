@@ -29,7 +29,7 @@ macOS will ask for two permissions:
 | Hold **Fn+Shift**, speak, release | corrected text typed into the focused field |
 | **Esc** while holding | cancel, nothing inserted |
 
-You'll hear a "Pop" when recording starts (begin speaking just after it) and a "Tink" when text lands. On-the-fly cleanup fixes punctuation, obvious mis-recognitions, and self-corrections ("send it Monday — no wait, Tuesday" → "send it Tuesday") but never rephrases or translates.
+You'll hear a "Pop" when recording starts (begin speaking just after it) and a "Tink" when text lands. On-the-fly cleanup fixes punctuation, obvious mis-recognitions, and self-corrections ("send it Monday — no wait, Tuesday" → "send it Tuesday") but never rephrases or translates. Dictated enumerations ("first…, second…, third…") come out as numbered lists, typed with Shift+Return so chat apps don't fire mid-list. Profanity is transcribed faithfully — your words, your 🤬.
 
 ## Privacy
 
