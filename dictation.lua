@@ -19,6 +19,15 @@ local CONFIG = {
   cleanupModel = "llama-3.3-70b-versatile",
   cleanupEnabled = true,
   sounds = true,
+  -- Whisper auto-detect sometimes misfires on short/accented clips (e.g. English heard
+  -- as Lithuanian). If the detected language is not in this set, retranscribe once with
+  -- a forced fallback: a related language if mapped below, else English.
+  allowedLanguages = { english = true, russian = true, german = true, spanish = true },
+  misdetectFallback = {
+    ukrainian = "ru", belarusian = "ru", bulgarian = "ru", macedonian = "ru",
+    dutch = "de", afrikaans = "de",
+    catalan = "es", galician = "es", portuguese = "es",
+  },
 }
 
 local CLEANUP_PROMPT = [[You are a text-cleanup FUNCTION, not an assistant and not a chatbot. You receive raw dictation transcript between <dictation> and </dictation> tags and you return that same text with only minor transcription artifacts fixed.
@@ -137,14 +146,18 @@ local function cleanupAndInsert(rawText)
   )
 end
 
-local function transcribe()
-  local attrs = hs.fs.attributes(CONFIG.audioFile)
-  if not attrs or attrs.size < 5000 then
-    processing = false
-    closeAlert()
-    log("audio file missing or too small (" .. tostring(attrs and attrs.size) .. " bytes)")
-    showAlert("🎤 no audio captured", 1.5)
-    return
+local function runTranscription(forceLang)
+  local args = {
+    "-s", "--max-time", "60",
+    "-X", "POST", "https://api.groq.com/openai/v1/audio/transcriptions",
+    "-H", "Authorization: Bearer " .. apiKey,
+    "-F", "file=@" .. CONFIG.audioFile,
+    "-F", "model=" .. CONFIG.transcribeModel,
+    "-F", "response_format=verbose_json",
+  }
+  if forceLang then
+    table.insert(args, "-F")
+    table.insert(args, "language=" .. forceLang)
   end
   local curl = hs.task.new("/usr/bin/curl", function(exitCode, stdOut, stdErr)
     if exitCode ~= 0 then
@@ -162,16 +175,30 @@ local function transcribe()
       showAlert("🎤 transcription failed", 2)
       return
     end
+    local lang = tostring(parsed.language or ""):lower()
+    if not forceLang and lang ~= "" and not CONFIG.allowedLanguages[lang] then
+      local fb = CONFIG.misdetectFallback[lang] or "en"
+      appendLog("misdetect", lang .. " → retrying forced " .. fb .. " | was: " .. parsed.text)
+      log("whisper detected '" .. lang .. "', not in allowlist — retrying with language=" .. fb)
+      runTranscription(fb)
+      return
+    end
     appendLog("raw", parsed.text)
     cleanupAndInsert(parsed.text)
-  end, {
-    "-s", "--max-time", "60",
-    "-X", "POST", "https://api.groq.com/openai/v1/audio/transcriptions",
-    "-H", "Authorization: Bearer " .. apiKey,
-    "-F", "file=@" .. CONFIG.audioFile,
-    "-F", "model=" .. CONFIG.transcribeModel,
-  })
+  end, args)
   curl:start()
+end
+
+local function transcribe()
+  local attrs = hs.fs.attributes(CONFIG.audioFile)
+  if not attrs or attrs.size < 5000 then
+    processing = false
+    closeAlert()
+    log("audio file missing or too small (" .. tostring(attrs and attrs.size) .. " bytes)")
+    showAlert("🎤 no audio captured", 1.5)
+    return
+  end
+  runTranscription(nil)
 end
 
 -- ---------------------------------------------------------------- recording
