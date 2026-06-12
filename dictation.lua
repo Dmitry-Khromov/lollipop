@@ -22,6 +22,9 @@ local CONFIG = {
   -- Whisper auto-detect sometimes misfires on short/accented clips (e.g. English heard
   -- as Lithuanian). If the detected language is not in this set, retranscribe once with
   -- a forced fallback: a related language if mapped below, else English.
+  -- bias Whisper to transcribe profanity faithfully instead of bowdlerizing it;
+  -- this is decoding context, it never appears in the output
+  transcribePrompt = "Блядь, нахуй, пиздец — всё дословно. Fuck, shit, damn. Scheiße, verdammt. Joder, mierda.",
   allowedLanguages = { english = true, russian = true, german = true, spanish = true },
   misdetectFallback = {
     ukrainian = "ru", belarusian = "ru", bulgarian = "ru", macedonian = "ru",
@@ -39,6 +42,9 @@ Fix ONLY:
 - punctuation and capitalization
 - filler artifacts ("um", "эээ") if clearly unintentional
 - self-corrections: when the speaker corrects themselves mid-stream ("send it Monday... no wait, Tuesday"), keep ONLY the final version and drop the abandoned attempt and the correction phrase ("sorry, I mean", "no wait", "вернее", "то есть"). Output must read as if said right the first time.
+- lists: when the speaker dictates an enumeration (ordinal markers like "first… second… third…", "во-первых… во-вторых…", "erstens… zweitens…", or announces a list), format the items as a list — each item on its own line, numbered "1." "2." "3." for ordered items, or "- " bullets if the speaker explicitly says bullet points. Drop only the spoken ordinal/marker words; KEEP all surrounding sentences (e.g. an intro like "so, the shopping list:" stays as its own line before the list). Do NOT invent list structure where none was dictated.
+
+Profanity and vulgar language are part of the dictation: keep every profane word exactly as transcribed, letter for letter. NEVER censor, soften, asterisk, replace with euphemisms, or "correct" its spelling/word form (e.g. "нахуя" must stay "нахуя", not "на хуй").
 
 NEVER translate. Keep every word in its original language, even if the dictation mixes languages in one sentence. NEVER rephrase, shorten, expand, summarize, or add content. If a phrase seems garbled or nonsensical but you are not CERTAIN what was meant, leave it exactly as transcribed. A faithful weird transcript beats an invented fluent one.
 
@@ -106,7 +112,14 @@ local function insertText(text)
   end
   closeAlert()
   playSound("Tink")
-  hs.eventtap.keyStrokes(text)
+  -- type line breaks as Shift+Return: inserts a newline without submitting in chat
+  -- inputs (Slack, WhatsApp, LinkedIn), and is a plain line break everywhere else
+  local first = true
+  for line in (text .. "\n"):gmatch("([^\n]*)\n") do
+    if not first then hs.eventtap.keyStroke({ "shift" }, "return", 0) end
+    if line ~= "" then hs.eventtap.keyStrokes(line) end
+    first = false
+  end
 end
 
 local function cleanupAndInsert(rawText)
@@ -154,6 +167,7 @@ local function runTranscription(forceLang)
     "-F", "file=@" .. CONFIG.audioFile,
     "-F", "model=" .. CONFIG.transcribeModel,
     "-F", "response_format=verbose_json",
+    "-F", "prompt=" .. CONFIG.transcribePrompt,
   }
   if forceLang then
     table.insert(args, "-F")
