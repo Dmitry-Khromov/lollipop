@@ -19,18 +19,15 @@ local CONFIG = {
   cleanupModel = "llama-3.3-70b-versatile",
   cleanupEnabled = true,
   sounds = true,
-  -- Whisper auto-detect sometimes misfires on short/accented clips (e.g. English heard
-  -- as Lithuanian). If the detected language is not in this set, retranscribe once with
-  -- a forced fallback: a related language if mapped below, else English.
   -- bias Whisper to transcribe profanity faithfully instead of bowdlerizing it;
   -- this is decoding context, it never appears in the output
   transcribePrompt = "Блядь, нахуй, пиздец — всё дословно. Fuck, shit, damn. Scheiße, verdammt. Joder, mierda.",
+  -- Whisper auto-detect sometimes misfires on short/accented clips (e.g. English heard
+  -- as Lithuanian, Spanish as Polish). If the detected language is not in the allowlist,
+  -- retranscribe in ALL retry languages in parallel and keep the transcript Whisper is
+  -- most confident about (highest avg_logprob) — no guessing which language it "really" was.
   allowedLanguages = { english = true, russian = true, german = true, spanish = true },
-  misdetectFallback = {
-    ukrainian = "ru", belarusian = "ru", bulgarian = "ru", macedonian = "ru",
-    dutch = "de", afrikaans = "de",
-    catalan = "es", galician = "es", portuguese = "es",
-  },
+  retryLanguages = { "en", "ru", "de", "es" }, -- ISO codes of allowedLanguages
 }
 
 local CLEANUP_PROMPT = [[You are a text-cleanup FUNCTION, not an assistant and not a chatbot. You receive raw dictation transcript between <dictation> and </dictation> tags and you return that same text with only minor transcription artifacts fixed.
@@ -159,7 +156,9 @@ local function cleanupAndInsert(rawText)
   )
 end
 
-local function runTranscription(forceLang)
+-- one transcription request; cb receives nil on failure, else
+-- { text, language, score } where score is the mean segment avg_logprob
+local function transcriptionRequest(forceLang, cb)
   local args = {
     "-s", "--max-time", "60",
     "-X", "POST", "https://api.groq.com/openai/v1/audio/transcriptions",
@@ -175,32 +174,33 @@ local function runTranscription(forceLang)
   end
   local curl = hs.task.new("/usr/bin/curl", function(exitCode, stdOut, stdErr)
     if exitCode ~= 0 then
-      processing = false
-      closeAlert()
       log("transcription curl failed: " .. tostring(stdErr))
-      showAlert("🎤 transcription failed", 2)
+      cb(nil)
       return
     end
     local ok, parsed = pcall(hs.json.decode, stdOut)
     if not ok or not parsed or not parsed.text then
-      processing = false
-      closeAlert()
       log("transcription response unparseable: " .. tostring(stdOut):sub(1, 200))
-      showAlert("🎤 transcription failed", 2)
+      cb(nil)
       return
     end
-    local lang = tostring(parsed.language or ""):lower()
-    if not forceLang and lang ~= "" and not CONFIG.allowedLanguages[lang] then
-      local fb = CONFIG.misdetectFallback[lang] or "en"
-      appendLog("misdetect", lang .. " → retrying forced " .. fb .. " | was: " .. parsed.text)
-      log("whisper detected '" .. lang .. "', not in allowlist — retrying with language=" .. fb)
-      runTranscription(fb)
-      return
+    local score, n = 0, 0
+    for _, seg in ipairs(parsed.segments or {}) do
+      if seg.avg_logprob then score = score + seg.avg_logprob; n = n + 1 end
     end
-    appendLog("raw", parsed.text)
-    cleanupAndInsert(parsed.text)
+    cb({
+      text = parsed.text,
+      language = tostring(parsed.language or ""):lower(),
+      score = n > 0 and (score / n) or -10,
+    })
   end, args)
   curl:start()
+end
+
+local function transcriptionFailed()
+  processing = false
+  closeAlert()
+  showAlert("🎤 transcription failed", 2)
 end
 
 local function transcribe()
@@ -212,7 +212,34 @@ local function transcribe()
     showAlert("🎤 no audio captured", 1.5)
     return
   end
-  runTranscription(nil)
+  transcriptionRequest(nil, function(res)
+    if not res then transcriptionFailed() return end
+    if res.language == "" or CONFIG.allowedLanguages[res.language] then
+      appendLog("raw", res.text)
+      cleanupAndInsert(res.text)
+      return
+    end
+    -- misdetected: race all allowed languages, keep the most confident transcript
+    appendLog("misdetect", res.language .. " | was: " .. res.text)
+    log("whisper detected '" .. res.language .. "', not in allowlist — racing " .. table.concat(CONFIG.retryLanguages, "/"))
+    local results, pending = {}, #CONFIG.retryLanguages
+    for _, lc in ipairs(CONFIG.retryLanguages) do
+      transcriptionRequest(lc, function(r)
+        results[lc] = r
+        pending = pending - 1
+        if pending > 0 then return end
+        local bestLang, best = nil, nil
+        for _, l in ipairs(CONFIG.retryLanguages) do
+          local rr = results[l]
+          if rr and (not best or rr.score > best.score) then best, bestLang = rr, l end
+        end
+        if not best then transcriptionFailed() return end
+        appendLog("retry-pick", bestLang .. string.format(" (logprob %.2f)", best.score))
+        appendLog("raw", best.text)
+        cleanupAndInsert(best.text)
+      end)
+    end
+  end)
 end
 
 -- ---------------------------------------------------------------- recording
