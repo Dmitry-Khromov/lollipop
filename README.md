@@ -11,7 +11,7 @@ Nothing to install, no subscription. You bring your own [Groq](https://console.g
 ## Install
 
 ```bash
-git clone <REPO_URL>
+git clone https://github.com/Dmitry-Khromov/lollipop.git
 cd lollipop
 ./setup.sh
 ```
