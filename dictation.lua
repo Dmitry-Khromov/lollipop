@@ -19,6 +19,7 @@ local CONFIG = {
   cleanupModel = "llama-3.3-70b-versatile",
   cleanupEnabled = true,
   sounds = true,
+  trailingSpace = true, -- end each dictation with a space so the next phrase isn't glued to this one
   -- bias Whisper to transcribe profanity faithfully instead of bowdlerizing it;
   -- this is decoding context, it never appears in the output
   transcribePrompt = "Блядь, нахуй, пиздец — всё дословно. Fuck, shit, damn. Scheiße, verdammt. Joder, mierda.",
@@ -117,6 +118,8 @@ local function insertText(text)
     if line ~= "" then hs.eventtap.keyStrokes(line) end
     first = false
   end
+  -- trailing space so consecutive dictations don't run together
+  if CONFIG.trailingSpace then hs.eventtap.keyStrokes(" ") end
 end
 
 local function cleanupAndInsert(rawText)
