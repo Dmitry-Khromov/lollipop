@@ -15,6 +15,7 @@ local CONFIG = {
   micDevice = ":default", -- follows the system input device (AirPods, built-in, …)
   minPressSec = 0.4,
   maxRecordSec = 180,
+  watchdogSec = 0.25, -- poll key state this often; backstop if a release event is dropped (mic stuck on)
   transcribeModel = "whisper-large-v3",
   cleanupModel = "llama-3.3-70b-versatile",
   cleanupEnabled = true,
@@ -57,6 +58,7 @@ local recordStart = 0
 local ffmpegTask = nil
 local cancelled = false
 local maxTimer = nil
+local watchdog = nil
 local alertId = nil
 local escTap = nil
 local stopRecording
@@ -288,12 +290,21 @@ local function startRecording()
   playSound("Pop")
   showAlert("🎤 listening…")
   maxTimer = hs.timer.doAfter(CONFIG.maxRecordSec, function()
-    if recording then stopRecording(false) end
+    if recording then stopRecording(false, "maxtime") end
+  end)
+  -- watchdog: poll the real key state, independent of event delivery. If the OS drops
+  -- the Fn+Shift release event (secure-input fields, MDM/security tooling), the
+  -- flagsChanged tap below never fires and the mic would hang until maxTimer. Shift is a
+  -- reliably-readable modifier, so releasing it is a safe stop signal that can't misfire.
+  watchdog = hs.timer.doEvery(CONFIG.watchdogSec, function()
+    if recording and not hs.eventtap.checkKeyboardModifiers().shift then
+      stopRecording(false, "watchdog")
+    end
   end)
   -- Esc while holding = cancel without inserting
   escTap = hs.eventtap.new({ hs.eventtap.event.types.keyDown }, function(e)
     if e:getKeyCode() == hs.keycodes.map.escape and recording then
-      stopRecording(true)
+      stopRecording(true, "escape")
       return true
     end
     return false
@@ -301,13 +312,15 @@ local function startRecording()
   escTap:start()
 end
 
-stopRecording = function(cancel)
+stopRecording = function(cancel, reason)
   if not recording then return end
   recording = false
   stopEscTap()
   if maxTimer then maxTimer:stop(); maxTimer = nil end
+  if watchdog then watchdog:stop(); watchdog = nil end
   local held = hs.timer.secondsSinceEpoch() - recordStart
   cancelled = cancel or (held < CONFIG.minPressSec)
+  appendLog("stop", string.format("%s after %.1fs%s", reason or "released", held, cancelled and " (discarded)" or ""))
   if cancelled then
     closeAlert()
   else
@@ -315,7 +328,16 @@ stopRecording = function(cancel)
     showAlert("✍️ transcribing…")
   end
   if ffmpegTask then
-    ffmpegTask:terminate() -- SIGTERM: ffmpeg finalizes the file, then the task callback runs
+    local task = ffmpegTask -- capture: a new recording may reassign ffmpegTask before this fires
+    task:terminate() -- SIGTERM: ffmpeg finalizes the file, then the task callback runs
+    -- guarantee the mic is released even if ffmpeg ignores SIGTERM (stuck-mic insurance)
+    hs.timer.doAfter(2, function()
+      if task:isRunning() then
+        log("ffmpeg ignored SIGTERM, sending SIGKILL")
+        appendLog("stop", "ffmpeg hard-killed (SIGTERM ignored)")
+        os.execute("kill -9 " .. task:pid() .. " 2>/dev/null")
+      end
+    end)
   else
     processing = false
     closeAlert()
