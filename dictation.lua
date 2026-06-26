@@ -59,6 +59,8 @@ local ffmpegTask = nil
 local cancelled = false
 local maxTimer = nil
 local watchdog = nil
+local startFallback = nil
+local captureStarted = false
 local alertId = nil
 local escTap = nil
 local stopRecording
@@ -268,8 +270,20 @@ local function startRecording()
   end
   recording = true
   cancelled = false
+  captureStarted = false
   recordStart = hs.timer.secondsSinceEpoch()
   os.remove(CONFIG.audioFile)
+  -- avfoundation takes ~0.5s+ to actually open the mic after launch (slower on managed
+  -- Macs). "Pop" must mean "capturing now", not "launched ffmpeg", or the first words are
+  -- lost. So gate the ready signal on ffmpeg's first progress output (forced via -stats).
+  local function signalReady()
+    if captureStarted or not recording then return end
+    captureStarted = true
+    if startFallback then startFallback:stop(); startFallback = nil end
+    recordStart = hs.timer.secondsSinceEpoch() -- count the hold from when capture truly began
+    playSound("Pop")
+    showAlert("🎤 listening…")
+  end
   ffmpegTask = hs.task.new(CONFIG.ffmpegPath, function()
     -- fires after terminate(): decide whether to transcribe or discard
     ffmpegTask = nil
@@ -278,8 +292,15 @@ local function startRecording()
       return
     end
     transcribe()
+  end, function(_, _, stdErr) -- stream callback: watch for capture start
+    if stdErr and (stdErr:find("size=") or stdErr:find("time=")) then
+      signalReady()
+      return false -- stop streaming once detected; ffmpeg keeps recording
+    end
+    return true
   end, {
     "-hide_banner", "-y",
+    "-stats", "-stats_period", "0.1", -- force periodic progress so we can detect capture start
     "-f", "avfoundation", "-i", CONFIG.micDevice,
     -- speechnorm: built-in mic capture is often quiet, which makes Whisper mishear
     "-af", "speechnorm=e=12.5:r=0.0001:l=1",
@@ -287,8 +308,9 @@ local function startRecording()
     CONFIG.audioFile,
   })
   ffmpegTask:start()
-  playSound("Pop")
-  showAlert("🎤 listening…")
+  showAlert("🎤 starting…")
+  -- fallback: if stats parsing ever fails, signal ready anyway so we never hang silent
+  startFallback = hs.timer.doAfter(1.2, signalReady)
   maxTimer = hs.timer.doAfter(CONFIG.maxRecordSec, function()
     if recording then stopRecording(false, "maxtime") end
   end)
@@ -318,6 +340,7 @@ stopRecording = function(cancel, reason)
   stopEscTap()
   if maxTimer then maxTimer:stop(); maxTimer = nil end
   if watchdog then watchdog:stop(); watchdog = nil end
+  if startFallback then startFallback:stop(); startFallback = nil end
   local held = hs.timer.secondsSinceEpoch() - recordStart
   cancelled = cancel or (held < CONFIG.minPressSec)
   appendLog("stop", string.format("%s after %.1fs%s", reason or "released", held, cancelled and " (discarded)" or ""))
